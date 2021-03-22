@@ -18,7 +18,7 @@ import utils
 import click
 from vqa_debias_loss_functions import *
 
-import wandb
+#import wandb
 
 
 def parse_args():
@@ -129,7 +129,6 @@ def main():
         else:
             os._exit(1)
 
-    wandb.config.update(args)
 
 
     if dataset=='cpv1':
@@ -176,8 +175,6 @@ def main():
         qid2type=json.load(f)
     model=model.cuda()
     batch_size = args.batch_size
-    
-    wandb.watch(model)
 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -190,7 +187,6 @@ def main():
     train(model, train_loader, eval_loader, args,qid2type)
 
 if __name__ == '__main__':
-    wandb.init()
     main()
 
 

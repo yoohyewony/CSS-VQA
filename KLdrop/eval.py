@@ -54,10 +54,9 @@ def parse_args():
 
 def compute_score_with_logits(logits, labels):
     logits = torch.argmax(logits, 1)
-    one_hots = torch.zeros(*labels.size()).cuda()
-    one_hots.scatter_(1, logits.view(-1, 1), 1)
-    scores = (one_hots * labels)
-    return scores.sum(1)
+    labels = torch.argmax(labels, 1)
+    scores = (logits==labels)
+    return scores
 
 
 def evaluate(model,dataloader,qid2type):

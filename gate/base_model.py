@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
 from attention import Attention, NewAttention
 from language_model import WordEmbedding, QuestionEmbedding
 from classifier import SimpleClassifier
@@ -56,15 +55,15 @@ class BaseModel(nn.Module):
         joint_repr = q_repr * v_repr    #[512, 1024]
 
         logits = self.classifier(joint_repr)
-
+        '''
         if labels is not None:
-            #loss = self.debias_loss_fn(joint_repr, logits, bias, labels)
-            loss = F.binary_cross_entropy_with_logits(logits, labels, reduction='none').sum(1)
+            loss = self.debias_loss_fn(joint_repr, logits, bias, labels)
+
         else:
             loss = None
-
-        #loss = F.binary_cross_entropy_with_logits(logits, labels, reduction='none').sum(1)
-        return logits, loss, w_emb
+        '''
+        loss = None
+        return logits, loss, v_emb #w_emb
 
 def build_baseline0(dataset, num_hid):
     w_emb = WordEmbedding(dataset.dictionary.ntoken, 300, 0.0)

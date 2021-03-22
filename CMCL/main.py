@@ -18,7 +18,7 @@ import utils
 import click
 from vqa_debias_loss_functions import *
 
-import wandb
+#import wandb
 
 
 def parse_args():
@@ -115,21 +115,24 @@ def get_bias(train_dset, eval_dset):
 
 
 def main():
+    #wandb.init()
+    
     args = parse_args()
+    
+    #wandb.config.update(args)
+    
     dataset=args.dataset
     args.output=os.path.join('logs',args.output)
     if not os.path.isdir(args.output):
         utils.create_dir(args.output)
     else:
-        if click.confirm('Exp directory already exists in {}. Erase?'
-                                 .format(args.output, default=False)):
+        if click.confirm('Exp directory already exists in {}. Erase?'.format(args.output, default=False)):
             os.system('rm -r ' + args.output)
             utils.create_dir(args.output)
 
         else:
             os._exit(1)
 
-    wandb.config.update(args)
 
 
     if dataset=='cpv1':
@@ -145,39 +148,45 @@ def main():
     eval_dset = VQAFeatureDataset('val', dictionary, dataset=dataset,
                                   cache_image_features=args.cache_features)
 
-    get_bias(train_dset,eval_dset)
+    get_bias(train_dset, eval_dset)
 
 
     # Build the model using the original constructor
     constructor = 'build_%s' % args.model
-    model = getattr(base_model, constructor)(train_dset, args.num_hid).cuda()
-    model1 = getattr(base_model, constructor)(train_dset, args.num_hid).cuda()
-    if dataset=='cpv1':
-        model.w_emb.init_embedding('data/glove6b_init_300d_v1.npy')
-    elif dataset=='cpv2' or dataset=='v2':
-        model.w_emb.init_embedding('data/glove6b_init_300d.npy')
+    
+    models = []
+    for i in range(args.model_num):
+        model = getattr(base_model, constructor)(train_dset, args.num_hid).cuda()
+        
+        if dataset=='cpv1':
+            model.w_emb.init_embedding('data/glove6b_init_300d_v1.npy')
+        elif dataset=='cpv2' or dataset=='v2':
+            model.w_emb.init_embedding('data/glove6b_init_300d.npy')
 
-    # Add the loss_fn based our arguments
-    if args.debias == "bias_product":
-        model.debias_loss_fn = BiasProduct()
-    elif args.debias == "none":
-        model.debias_loss_fn = Plain()
-    elif args.debias == "reweight":
-        model.debias_loss_fn = ReweightByInvBias()
-    elif args.debias == "learned_mixin":
-        model.debias_loss_fn = LearnedMixin(args.entropy_penalty)
-    elif args.debias=='focal':
-        model.debias_loss_fn = Focal()
-    else:
-        raise RuntimeError(args.mode)
-
-
+        # Add the loss_fn based our arguments
+        if args.debias == "bias_product":
+            model.debias_loss_fn = BiasProduct()
+        elif args.debias == "none":
+            model.debias_loss_fn = Plain()
+        elif args.debias == "reweight":
+            model.debias_loss_fn = ReweightByInvBias()
+        elif args.debias == "learned_mixin":
+            model.debias_loss_fn = LearnedMixin(args.entropy_penalty)
+        elif args.debias=='focal':
+            model.debias_loss_fn = Focal()
+        else:
+            raise RuntimeError(args.mode)
+        
+        model = nn.DataParallel(model).cuda()
+        models.append(model)
+        
+        #wandb.watch(model)
+        
     with open('util/qid2type_%s.json'%args.dataset,'r') as f:
         qid2type=json.load(f)
-    model=model.cuda()
-    batch_size = args.batch_size
     
-    wandb.watch(model)
+    #model=model.cuda()
+    batch_size = args.batch_size
 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -187,10 +196,9 @@ def main():
     eval_loader = DataLoader(eval_dset, batch_size, shuffle=False, num_workers=0)
 
     print("Starting training...")
-    train(model, train_loader, eval_loader, args,qid2type)
+    train(models, train_loader, eval_loader, args, qid2type)
 
 if __name__ == '__main__':
-    wandb.init()
     main()
 
 

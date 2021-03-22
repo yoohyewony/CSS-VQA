@@ -14,10 +14,14 @@ from tqdm import tqdm
 import random
 import copy
 
-import wandb
 
 def compute_score_with_logits(logits, labels):
     logits = torch.argmax(logits, 1)
+    #labels = torch.argmax(labels, 1)
+    #scores = (logits==labels)
+    #print((labels==1).sum())
+    #s, _ = torch.sort(labels)
+    #print(s[100][2220:])
     one_hots = torch.zeros(*labels.size()).cuda()
     one_hots.scatter_(1, logits.view(-1, 1), 1)
     scores = (one_hots * labels)
@@ -84,14 +88,11 @@ def train(model, train_loader, eval_loader,args,qid2type):
                     raise ValueError("NaN loss")
                 
                 L_sorted, idx = torch.sort(L)
-                loss = L_sorted[416:].sum() #+ loss_KL
-                
-                for i in idx[416:]:
+                loss = L_sorted[312:].sum()
+                for i in idx[312:]:
                     loss += loss_KL[i]
 
-                #loss = L.sum() + loss_KL
-                
-                wandb.log({"Train loss " : loss.item()/96})
+                #loss = L.sum() + 2*loss_KL
                 
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), 0.25)
@@ -376,8 +377,6 @@ def train(model, train_loader, eval_loader,args,qid2type):
 
         logger.write('epoch %d, time: %.2f' % (epoch, time.time() - t))
         logger.write('\ttrain_loss: %.2f, score: %.2f' % (total_loss, train_score))
-        wandb.log({"Train accuracy " : train_score,
-                  "Eval accuracy" : 100*eval_score})
 
         if run_eval:
             logger.write('\teval score: %.2f (%.2f)' % (100 * eval_score, 100 * bound))

@@ -14,28 +14,47 @@ from tqdm import tqdm
 import random
 import copy
 
-import wandb
+#import wandb
 
 def compute_score_with_logits(logits, labels):
     logits = torch.argmax(logits, 1)
+    labels = torch.argmax(labels, 1)
+    scores = (logits==labels)
+    '''
     one_hots = torch.zeros(*labels.size()).cuda()
     one_hots.scatter_(1, logits.view(-1, 1), 1)
+    print(one_hots.sum(), (one_hots==1).sum(), (one_hots>0.8).sum())
     scores = (one_hots * labels)
-    return scores.sum(1)
+    print(labels.sum(), (labels==1).sum(), (labels>0.8).sum())
+    print(scores.sum(), (scores==1).sum(), (scores>0.8).sum())
+    '''
+    return scores
 
-def train(model, train_loader, eval_loader,args,qid2type):
+def true_logit(logits, labels):
+    logits = torch.argmax(logits, 1)
+    one_hots = torch.zeros(*labels.size()).cuda()
+    one_hots.scatter_(1, logits.view(-1, 1), 1)
+    return one_hots
+
+def train(models, train_loader, eval_loader, args, qid2type):
     dataset=args.dataset
     num_epochs=args.epochs
     mode=args.mode
     run_eval=args.eval_each_epoch
     output=args.output
-    optim = torch.optim.Adamax(model.parameters())
+    #optim = torch.optim.Adamax(model.parameters())
     logger = utils.Logger(os.path.join(output, 'log.txt'))
     total_step = 0
     best_eval_score = 0
+    
+    model_num = args.model_num
+    
+    optimizers = []
+    for i in range(model_num):
+        optim = torch.optim.Adamax(models[i].parameters())
+        optimizers.append(optim)
 
-
-
+        
     if mode=='q_debias':
         topq=args.topq
         keep_qtype=args.keep_qtype
@@ -48,6 +67,7 @@ def train(model, train_loader, eval_loader,args,qid2type):
         topq=args.topq
         keep_qtype=args.keep_qtype
         qvp=args.qvp
+
 
     KLD = nn.KLDivLoss(reduction='none')
 
@@ -63,7 +83,7 @@ def train(model, train_loader, eval_loader,args,qid2type):
 
 
             #########################################
-            v = Variable(v).cuda().requires_grad_()
+            v = Variable(v).cuda().requires_grad_()    # [512, 36, 2048]
             q = Variable(q).cuda()
             q_mask=Variable(q_mask).cuda()
             a = Variable(a).cuda()
@@ -73,33 +93,45 @@ def train(model, train_loader, eval_loader,args,qid2type):
             notype_mask=Variable(notype_mask).float().cuda()
             #########################################
 
-            target_kld = torch.ones(a.shape).cuda()/2274
-            #target_kld = torch.zeros(a.shape).cuda()
+            loss_o = 0
+            loss_idx = torch.zeros(a.size(0)).cuda()
+            target_kld = torch.ones(a.size(0), 2274).cuda()/2274
             
             if mode=='updn':
-                pred, L,_ = model(v, q, a, b, None)
-                loss_KL = KLD(F.log_softmax(pred, dim=1), target_kld).sum(1)
-                #loss_KL = F.binary_cross_entropy_with_logits(pred, target_kld, reduction='none').sum()
-                if (L != L).any():
-                    raise ValueError("NaN loss")
-                
-                L_sorted, idx = torch.sort(L)
-                loss = L_sorted[416:].sum() #+ loss_KL
-                
-                for i in idx[416:]:
-                    loss += loss_KL[i]
+                for i in range(model_num):
+                    pred, loss, _ = models[i](v, q, a, b, None)
+                    #loss_KL = KLD(F.log_softmax(pred, dim=1), target_kld).sum(1)
+                    if(i==0):
+                        #preds = pred
+                        score = compute_score_with_logits(pred, a.data)
+                        loss_o = loss
+                        loss_KL = KLD(F.log_softmax(pred, dim=1), target_kld).sum(1)
+                    else:
+                        #preds = torch.maximum(preds, pred)
+                        tmp = compute_score_with_logits(pred, a.data)
+                        score = torch.logical_or(tmp, score)
+                        loss_o = torch.minimum(loss_o, loss)
+                        loss_KL = torch.vstack([loss_KL, KLD(F.log_softmax(pred, dim=1), target_kld).sum(1)])
+                        loss_idx = loss_idx*(loss_o!=loss) + i*(loss_o==loss)
 
-                #loss = L.sum() + loss_KL
-                
-                wandb.log({"Train loss " : loss.item()/96})
-                
-                loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 0.25)
-                optim.step()
-                optim.zero_grad()
+                for i in range(model_num):
+                    loss_o += loss_KL[i]*(loss_idx==i)
 
-                total_loss += loss.item()
-                batch_score = compute_score_with_logits(pred, a.data).sum()
+                #score = compute_score_with_logits(preds, a.data)
+                #loss_o += F.binary_cross_entropy_with_logits(preds, a, reduction='none').sum(1)
+                loss_o.sum().backward()
+                total_loss += loss_o.sum().detach() #* q.size(0)                           
+                                       
+                    #wandb.log({"Train loss " : loss.item()*q.size(0)/512})
+                
+                for i in range(model_num):
+                    nn.utils.clip_grad_norm_(models[i].parameters(), 0.25)
+                    optimizers[i].step()
+                    optimizers[i].zero_grad()
+                
+                #total_loss += loss.item() * q.size(0)
+                #batch_score = compute_score_with_logits(logit_sum, a.data).sum()
+                batch_score = score.sum()
                 train_score += batch_score
 
             elif mode=='q_debias':
@@ -108,18 +140,18 @@ def train(model, train_loader, eval_loader,args,qid2type):
                 else:
                     sen_mask=notype_mask
                 ## first train
-                pred, loss,word_emb = model(v, q, a, b, None)
+                pred, loss, word_emb = models(v, q, a, b, None)
 
                 word_grad = torch.autograd.grad((pred * (a > 0).float()).sum(), word_emb, create_graph=True)[0]
 
                 if (loss != loss).any():
                     raise ValueError("NaN loss")
                 loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 0.25)
+                nn.utils.clip_grad_norm_(models.parameters(), 0.25)                
                 optim.step()
                 optim.zero_grad()
 
-                total_loss += loss.item() * q.size(0)
+                #total_loss += loss.item() * q.size(0)
                 batch_score = compute_score_with_logits(pred, a.data).sum()
                 train_score += batch_score
 
@@ -143,7 +175,7 @@ def train(model, train_loader, eval_loader,args,qid2type):
                     m3 = m1 * 18455  ##[0,0,0...0,0,18455,18455,0]
                 q2 = q2 * m2.long() + m3.long()
 
-                pred, _, _ = model(v, q2, None, b, None)
+                pred, _, _ = models(v, q2, None, b, None)
 
                 pred_ind = torch.argsort(pred, 1, descending=True)[:, :5]
                 false_ans = torch.ones(pred.shape[0], pred.shape[1]).cuda()
@@ -157,12 +189,12 @@ def train(model, train_loader, eval_loader,args,qid2type):
 
                 ## third train
 
-                pred, loss, _ = model(v, q3, a2, b, None)
+                pred, loss, _ = models(v, q3, a2, b, None)
 
                 if (loss != loss).any():
                     raise ValueError("NaN loss")
                 loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 0.25)
+                nn.utils.clip_grad_norm_(models.parameters(), 0.25)
                 optim.step()
                 optim.zero_grad()
 
@@ -170,13 +202,13 @@ def train(model, train_loader, eval_loader,args,qid2type):
 
             elif mode=='v_debias':
                 ## first train
-                pred, loss, _ = model(v, q, a, b, None)
+                pred, loss, _ = models(v, q, a, b, None)
                 visual_grad=torch.autograd.grad((pred * (a > 0).float()).sum(), v, create_graph=True)[0]
 
                 if (loss != loss).any():
                     raise ValueError("NaN loss")
                 loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 0.25)
+                nn.utils.clip_grad_norm_(models.parameters(), 0.25)
                 optim.step()
                 optim.zero_grad()
 
@@ -207,7 +239,7 @@ def train(model, train_loader, eval_loader,args,qid2type):
                     v_mask.scatter_(1, v_star, 1)
 
 
-                pred, _, _ = model(v, q, None, b, v_mask)
+                pred, _, _ = models(v, q, None, b, v_mask)
 
                 pred_ind = torch.argsort(pred, 1, descending=True)[:, :5]
                 false_ans = torch.ones(pred.shape[0], pred.shape[1]).cuda()
@@ -216,12 +248,12 @@ def train(model, train_loader, eval_loader,args,qid2type):
 
                 v_mask = 1 - v_mask
 
-                pred, loss, _ = model(v, q, a2, b, v_mask)
+                pred, loss, _ = models(v, q, a2, b, v_mask)
 
                 if (loss != loss).any():
                     raise ValueError("NaN loss")
                 loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 0.25)
+                nn.utils.clip_grad_norm_(models.parameters(), 0.25)
                 optim.step()
                 optim.zero_grad()
 
@@ -235,13 +267,13 @@ def train(model, train_loader, eval_loader,args,qid2type):
                     sen_mask = notype_mask
                 if random_num<=qvp:
                     ## first train
-                    pred, loss, word_emb = model(v, q, a, b, None)
+                    pred, loss, word_emb = models(v, q, a, b, None)
                     word_grad = torch.autograd.grad((pred * (a > 0).float()).sum(), word_emb, create_graph=True)[0]
 
                     if (loss != loss).any():
                         raise ValueError("NaN loss")
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), 0.25)
+                    nn.utils.clip_grad_norm_(models.parameters(), 0.25)
                     optim.step()
                     optim.zero_grad()
 
@@ -268,7 +300,7 @@ def train(model, train_loader, eval_loader,args,qid2type):
                         m3 = m1 * 18455  ##[0,0,0...0,0,18455,18455,0]
                     q2 = q2 * m2.long() + m3.long()
 
-                    pred, _, _ = model(v, q2, None, b, None)
+                    pred, _, _ = models(v, q2, None, b, None)
 
                     pred_ind = torch.argsort(pred, 1, descending=True)[:, :5]
                     false_ans = torch.ones(pred.shape[0], pred.shape[1]).cuda()
@@ -282,12 +314,12 @@ def train(model, train_loader, eval_loader,args,qid2type):
 
                     ## third train
 
-                    pred, loss, _ = model(v, q3, a2, b, None)
+                    pred, loss, _ = models(v, q3, a2, b, None)
 
                     if (loss != loss).any():
                         raise ValueError("NaN loss")
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), 0.25)
+                    nn.utils.clip_grad_norm_(models.parameters(), 0.25)
                     optim.step()
                     optim.zero_grad()
 
@@ -296,13 +328,13 @@ def train(model, train_loader, eval_loader,args,qid2type):
 
                 else:
                     ## first train
-                    pred, loss, _ = model(v, q, a, b, None)
+                    pred, loss, _ = models(v, q, a, b, None)
                     visual_grad = torch.autograd.grad((pred * (a > 0).float()).sum(), v, create_graph=True)[0]
 
                     if (loss != loss).any():
                         raise ValueError("NaN loss")
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), 0.25)
+                    nn.utils.clip_grad_norm_(models.parameters(), 0.25)
                     optim.step()
                     optim.zero_grad()
 
@@ -332,7 +364,7 @@ def train(model, train_loader, eval_loader,args,qid2type):
                         v_star = v_ind.gather(1, v_grad_ind)
                         v_mask.scatter_(1, v_star, 1)
 
-                    pred, _, _ = model(v, q, None, b, v_mask)
+                    pred, _, _ = models(v, q, None, b, v_mask)
                     pred_ind = torch.argsort(pred, 1, descending=True)[:, :5]
                     false_ans = torch.ones(pred.shape[0], pred.shape[1]).cuda()
                     false_ans.scatter_(1, pred_ind, 0)
@@ -340,12 +372,12 @@ def train(model, train_loader, eval_loader,args,qid2type):
 
                     v_mask = 1 - v_mask
 
-                    pred, loss, _ = model(v, q, a2, b, v_mask)
+                    pred, loss, _ = models(v, q, a2, b, v_mask)
 
                     if (loss != loss).any():
                         raise ValueError("NaN loss")
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), 0.25)
+                    nn.utils.clip_grad_norm_(models.parameters(), 0.25)
                     optim.step()
                     optim.zero_grad()
 
@@ -353,43 +385,61 @@ def train(model, train_loader, eval_loader,args,qid2type):
 
         if mode=='updn':
             total_loss /= len(train_loader.dataset)
-            #print(pred.shape)
         else:
             total_loss /= len(train_loader.dataset) * 2
         train_score = 100 * train_score / len(train_loader.dataset)
 
         if run_eval:
-            model.train(False)
-            results = evaluate(model, eval_loader, qid2type)
+            for model in models:
+                model.train(False)
+                model.eval()
+            #gate.eval()
+            results = evaluate(models, eval_loader, qid2type, model_num)
             results["epoch"] = epoch + 1
             results["step"] = total_step
             results["train_loss"] = total_loss
             results["train_score"] = train_score
 
-            model.train(True)
-
+            for model in models:
+                model.train(True)
+            #gate.train(True)
+            
             eval_score = results["score"]
             bound = results["upper_bound"]
             yn = results['score_yesno']
             other = results['score_other']
             num = results['score_number']
+            accuracy = results['model_score']
+            top1 = results['top1']
 
         logger.write('epoch %d, time: %.2f' % (epoch, time.time() - t))
         logger.write('\ttrain_loss: %.2f, score: %.2f' % (total_loss, train_score))
-        wandb.log({"Train accuracy " : train_score,
-                  "Eval accuracy" : 100*eval_score})
 
         if run_eval:
             logger.write('\teval score: %.2f (%.2f)' % (100 * eval_score, 100 * bound))
             logger.write('\tyn score: %.2f other score: %.2f num score: %.2f' % (100 * yn, 100 * other, 100 * num))
+            logger.write('\ttop1 eval score: %.2f (%.2f)' % (100 * top1, 100 * bound))
+            for i in range(model_num):
+                logger.write('\tmodel%d eval score: %.2f'%(i, 100*accuracy[i]))
 
         if eval_score > best_eval_score:
             model_path = os.path.join(output, 'model.pth')
-            torch.save(model.state_dict(), model_path)
+            '''
+            model_state = []
+            for m in models:
+                model_state.append(m.state_dict())
+            state = { 'model' : model_state}
+            torch.save(state, model_path)
+            '''
+            state = {}
+            state['epoch'] = epoch+1
+            for i in range(model_num):
+                state['model{}'.format(i)] = models[i].state_dict()
+            torch.save(state, model_path)
             best_eval_score = eval_score
 
 
-def evaluate(model, dataloader, qid2type):
+def evaluate(models, dataloader, qid2type, model_num):
     score = 0
     upper_bound = 0
     score_yesno = 0
@@ -398,13 +448,27 @@ def evaluate(model, dataloader, qid2type):
     total_yesno = 0
     total_number = 0
     total_other = 0
-
+    accuracy = np.zeros(model_num)
+    l=0
+    top1 = 0
     for v, q, a, b, qids, _ in tqdm(dataloader, ncols=100, total=len(dataloader), desc="eval"):
         v = Variable(v, requires_grad=False).cuda()
         q = Variable(q, requires_grad=False).cuda()
-        pred, _,_ = model(v, q, None, None, None)
-        #print(pred.shape)
-        batch_score = compute_score_with_logits(pred, a.cuda()).cpu().numpy()
+        
+        for i in range(model_num):
+            pred, _, _ = models[i](v, q, a, b, None)
+            accuracy[i] += compute_score_with_logits(pred, a.cuda()).cpu().numpy().sum()
+            if(i==0):
+                logit = compute_score_with_logits(pred, a.cuda())
+                preds = pred
+            else:
+                tmp = compute_score_with_logits(pred, a.cuda())
+                logit = torch.logical_or(tmp, logit)
+                #print((tmp>0.5).sum(), logit.sum())
+                preds = torch.maximum(preds, pred)
+        
+        top1 += compute_score_with_logits(preds, a.cuda()).sum()
+        batch_score = logit.cpu().numpy()
         score += batch_score.sum()
         upper_bound += (a.max(1)[0]).sum()
         qids = qids.detach().cpu().int().numpy()
@@ -423,12 +487,15 @@ def evaluate(model, dataloader, qid2type):
             else:
                 print('Hahahahahahahahahahaha')
 
-
     score = score / len(dataloader.dataset)
     upper_bound = upper_bound / len(dataloader.dataset)
     score_yesno /= total_yesno
     score_other /= total_other
     score_number /= total_number
+    for i in range(model_num):
+        accuracy[i] = accuracy[i]/len(dataloader.dataset)
+    #print(len(dataloader.dataset))    #219928
+    top1 = top1/len(dataloader.dataset)
 
     results = dict(
         score=score,
@@ -436,5 +503,7 @@ def evaluate(model, dataloader, qid2type):
         score_yesno=score_yesno,
         score_other=score_other,
         score_number=score_number,
+        model_score = accuracy,
+        top1 = top1
     )
     return results

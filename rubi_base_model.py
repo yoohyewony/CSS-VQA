@@ -20,11 +20,7 @@ def mask_softmax(x,mask):
 
 class MLP(nn.Module):
 
-    def __init__(self,
-                 input_dim,
-                 dimensions,
-                 activation='relu',
-                 dropout=0.):
+    def __init__(self, input_dim, dimensions, activation='relu', dropout=0.):
         super(MLP, self).__init__()
         self.input_dim = input_dim
         self.dimensions = dimensions
@@ -104,8 +100,7 @@ def build_baseline0(dataset, num_hid):
     v_att = Attention(dataset.v_dim, q_emb.num_hid, num_hid)
     q_net = FCNet([num_hid, num_hid])
     v_net = FCNet([dataset.v_dim, num_hid])
-    classifier = SimpleClassifier(
-        num_hid, 2 * num_hid, dataset.num_ans_candidates, 0.5)
+    classifier = SimpleClassifier(num_hid, 2 * num_hid, dataset.num_ans_candidates, 0.5)
     return BaseModel(w_emb, q_emb, v_att, q_net, v_net, classifier)
 
 
@@ -117,6 +112,5 @@ def build_baseline0_newatt(dataset, num_hid):
     v_net = FCNet([dataset.v_dim, num_hid])
     c_1=MLP(input_dim=1024,dimensions=[1024,1024,dataset.num_ans_candidates])
     c_2=nn.Linear(dataset.num_ans_candidates,dataset.num_ans_candidates)
-    classifier = SimpleClassifier(
-        num_hid, num_hid * 2, dataset.num_ans_candidates, 0.5)
+    classifier = SimpleClassifier(num_hid, num_hid * 2, dataset.num_ans_candidates, 0.5)
     return BaseModel(w_emb, q_emb, v_att, q_net, v_net, classifier,c_1,c_2)

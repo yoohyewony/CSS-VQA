@@ -60,51 +60,51 @@ def compute_score_with_logits(logits, labels):
     return scores.sum(1)
 
 
-def evaluate(model,dataloader,qid2type):
-    score = 0
-    upper_bound = 0
-    score_yesno = 0
-    score_number = 0
-    score_other = 0
-    total_yesno = 0
-    total_number = 0
-    total_other = 0
-    model.train(False)
-    # import pdb;pdb.set_trace()
+def evaluate(model, dataloader, qid2type, model_num):
+    for i in range(model_num):
+        score = 0
+        upper_bound = 0
+        score_yesno = 0
+        score_number = 0
+        score_other = 0
+        total_yesno = 0
+        total_number = 0
+        total_other = 0
+        model[i].train(False)
 
-
-    for v, q, a, b,qids,hintscore in tqdm(dataloader, ncols=100, total=len(dataloader), desc="eval"):
-        v = Variable(v, requires_grad=False).cuda()
-        q = Variable(q, requires_grad=False).cuda()
-        pred, _ ,_= model(v, q, None, None,None)
-        batch_score= compute_score_with_logits(pred, a.cuda()).cpu().numpy()
-        score += batch_score.sum()
-        upper_bound += (a.max(1)[0]).sum()
-        qids = qids.detach().cpu().int().numpy()
-        for j in range(len(qids)):
-            qid=qids[j]
-            typ = qid2type[str(qid)]
-            if typ == 'yes/no':
-                score_yesno += batch_score[j]
-                total_yesno += 1
-            elif typ == 'other':
-                score_other += batch_score[j]
-                total_other += 1
-            elif typ == 'number':
-                score_number += batch_score[j]
-                total_number += 1
-            else:
-                print('Hahahahahahahahahahaha')
-    score = score / len(dataloader.dataset)
-    upper_bound = upper_bound / len(dataloader.dataset)
-    score_yesno /= total_yesno
-    score_other /= total_other
-    score_number /= total_number
-    print('\teval overall score: %.2f' % (100 * score))
-    print('\teval up_bound score: %.2f' % (100 * upper_bound))
-    print('\teval y/n score: %.2f' % (100 * score_yesno))
-    print('\teval other score: %.2f' % (100 * score_other))
-    print('\teval number score: %.2f' % (100 * score_number))
+        for v, q, a, b, qids, hintscore in tqdm(dataloader, ncols=100, total=len(dataloader), desc="eval"):
+            v = Variable(v, requires_grad=False).cuda()
+            q = Variable(q, requires_grad=False).cuda()
+            pred, _ ,_= model[i](v, q, None, None,None)
+            batch_score= compute_score_with_logits(pred, a.cuda()).cpu().numpy().sum(1)
+            score += batch_score.sum()
+            upper_bound += (a.max(1)[0]).sum()
+            qids = qids.detach().cpu().int().numpy()
+            for j in range(len(qids)):
+                qid=qids[j]
+                typ = qid2type[str(qid)]
+                if typ == 'yes/no':
+                    score_yesno += batch_score[j]
+                    total_yesno += 1
+                elif typ == 'other':
+                    score_other += batch_score[j]
+                    total_other += 1
+                elif typ == 'number':
+                    score_number += batch_score[j]
+                    total_number += 1
+                else:
+                    print('Hahahahahahahahahahaha')
+        score = score / len(dataloader.dataset)
+        upper_bound = upper_bound / len(dataloader.dataset)
+        score_yesno /= total_yesno
+        score_other /= total_other
+        score_number /= total_number
+        print('\tModel{}'.format(i))
+        print('\teval overall score: %.2f' % (100 * score))
+        #print('\teval up_bound score: %.2f' % (100 * upper_bound))
+        print('\teval y/n score: %.2f' % (100 * score_yesno))
+        print('\teval other score: %.2f' % (100 * score_other))
+        print('\teval number score: %.2f' % (100 * score_number))
 
 def evaluate_ai(model,dataloader,qid2type,label2ans):
     score=0
@@ -177,25 +177,32 @@ def main():
 
     # Build the model using the original constructor
     constructor = 'build_%s' % args.model
-    model = getattr(base_model, constructor)(eval_dset, args.num_hid).cuda()
+    models = []
+    checkpoint = torch.load(args.model_state)
+    print('\tEpoch {}'.format(checkpoint['epoch']))
+    for i in range(args.model_num):
+        model = getattr(base_model, constructor)(eval_dset, args.num_hid).cuda()
 
-    if args.debias == "bias_product":
-        model.debias_loss_fn = BiasProduct()
-    elif args.debias == "none":
-        model.debias_loss_fn = Plain()
-    elif args.debias == "reweight":
-        model.debias_loss_fn = ReweightByInvBias()
-    elif args.debias == "learned_mixin":
-        model.debias_loss_fn = LearnedMixin(args.entropy_penalty)
-    else:
-        raise RuntimeError(args.mode)
+        # Add the loss_fn based our arguments
+        if args.debias == "bias_product":
+            model.debias_loss_fn = BiasProduct()
+        elif args.debias == "none":
+            model.debias_loss_fn = Plain()
+        elif args.debias == "reweight":
+            model.debias_loss_fn = ReweightByInvBias()
+        elif args.debias == "learned_mixin":
+            model.debias_loss_fn = LearnedMixin(args.entropy_penalty)
+        elif args.debias=='focal':
+            model.debias_loss_fn = Focal()
+        else:
+            raise RuntimeError(args.mode)
 
+        #checkpoint = torch.load(args.model_state)
+        model = nn.DataParallel(model).cuda()
+        model.load_state_dict(checkpoint['model{}'.format(i)])
+        #model = nn.DataParallel(model).cuda()
+        models.append(model)
 
-    model_state = torch.load(args.model_state)
-    model.load_state_dict(model_state)
-
-
-    model = model.cuda()
     batch_size = args.batch_size
 
     torch.manual_seed(args.seed)
@@ -209,7 +216,7 @@ def main():
 
     print("Starting eval...")
 
-    evaluate(model,eval_loader,qid2type)
+    evaluate(models, eval_loader, qid2type, args.model_num)
 
 if __name__ == '__main__':
     main()

@@ -3,7 +3,8 @@ from __future__ import unicode_literals
 
 import os
 import json
-import cPickle
+import pickle as cPickle
+#import cPickle
 from collections import Counter
 
 import numpy as np
@@ -75,7 +76,7 @@ def _create_entry(img_idx, question, answer):
     entry = {
         'question_id' : question['question_id'],
         'image_id'    : question['image_id'],
-        'image_idx'       : img_idx,
+        'image_idx'   : img_idx,
         'question'    : question['question'],
         'answer'      : answer
     }
@@ -90,25 +91,25 @@ def _load_dataset(dataroot, name, img_id2val, dataset):
     name: 'train', 'val'
     """
     if dataset=='cpv2':
-      answer_path = os.path.join(dataroot, 'cp-cache', '%s_target.pkl' % name)
-      name = "train" if name == "train" else "test"
-      question_path = os.path.join(dataroot, 'vqacp_v2_%s_questions.json' % name)
-      with open(question_path) as f:
-        questions = json.load(f)
+        answer_path = os.path.join(dataroot, 'cp-cache', '%s_target.pkl' % name)
+        name = "train" if name == "train" else "test"
+        question_path = os.path.join(dataroot, 'vqacp_v2_%s_questions.json' % name)
+        with open(question_path) as f:
+            questions = json.load(f)
     elif dataset=='cpv1':
-      answer_path = os.path.join(dataroot, 'cp-v1-cache', '%s_target.pkl' % name)
-      name = "train" if name == "train" else "test"
-      question_path = os.path.join(dataroot, 'vqacp_v1_%s_questions.json' % name)
-      with open(question_path) as f:
-        questions = json.load(f)
+        answer_path = os.path.join(dataroot, 'cp-v1-cache', '%s_target.pkl' % name)
+        name = "train" if name == "train" else "test"
+        question_path = os.path.join(dataroot, 'vqacp_v1_%s_questions.json' % name)
+        with open(question_path) as f:
+            questions = json.load(f)
     elif dataset=='v2':
-      answer_path = os.path.join(dataroot, 'cache', '%s_target.pkl' % name)
-      question_path = os.path.join(dataroot, 'v2_OpenEnded_mscoco_%s2014_questions.json' % name)
-      with open(question_path) as f:
-        questions = json.load(f)["questions"]
+        answer_path = os.path.join(dataroot, 'cache', '%s_target.pkl' % name)
+        question_path = os.path.join(dataroot, 'v2_OpenEnded_mscoco_%s2014_questions.json' % name)
+        with open(question_path) as f:
+            questions = json.load(f)["questions"]
 
     with open(answer_path, 'rb') as f:
-      answers = cPickle.load(f)
+        answers = cPickle.load(f)
 
     questions.sort(key=lambda x: x['question_id'])
     answers.sort(key=lambda x: x['question_id'])
@@ -123,7 +124,7 @@ def _load_dataset(dataroot, name, img_id2val, dataset):
         img_id = question['image_id']
         img_idx = None
         if img_id2val:
-          img_idx = img_id2val[img_id]
+            img_idx = img_id2val[img_id]
 
         entries.append(_create_entry(img_idx, question, answer))
     return entries
@@ -200,7 +201,9 @@ class VQAFeatureDataset(Dataset):
                     if use_hdf5:
                         fe = np.array(self.features[imgid2idx[img_id]])
                     else:
-                        fe=torch.load('data/rcnn_feature/'+str(img_id)+'.pth')['image_feature']
+                        fe=torch.load('data/rcnn_feature/'+str(img_id)+'.pth', encoding="bytes")
+                        fe = fe[b'image_feature']
+                        #fe=torch.load('data/rcnn_feature/'+'.pth')['image_feature']
                     image_to_fe[img_id]=fe
             self.image_to_fe = image_to_fe
             if use_hdf5:
@@ -261,7 +264,9 @@ class VQAFeatureDataset(Dataset):
             features = np.array(self.features[entry['image_idx']])
             features = torch.from_numpy(features).view(36, 2048)
         else:
-            features = torch.load('data/rcnn_feature/' + str(entry["image_id"]) + '.pth')['image_feature']
+            #features = torch.load('data/rcnn_feature/' + str(entry["image_id"]) + '.pth')['image_feature']
+            features = torch.load('data/rcnn_feature/' + str(entry["image_id"]) +'.pth', encoding="bytes")
+            fetures = fe[b'image_feature']
 
         q_id=entry['question_id']
         ques = entry['q_token']
