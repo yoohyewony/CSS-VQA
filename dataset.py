@@ -178,6 +178,7 @@ class VQAFeatureDataset(Dataset):
         self.ans2label = cPickle.load(open(ans2label_path, 'rb'))
         self.label2ans = cPickle.load(open(label2ans_path, 'rb'))
         self.num_ans_candidates = len(self.ans2label)
+        #print(self.num_ans_candidates)
 
         self.dictionary = dictionary
         self.use_hdf5 = use_hdf5
@@ -223,6 +224,7 @@ class VQAFeatureDataset(Dataset):
         -1 represent nil, and should be treated as padding_idx in embedding
         """
         for entry in tqdm(self.entries, ncols=100, desc="tokenize"):
+            #print(entry['question'])
             tokens = self.dictionary.tokenize(entry['question'], False)
             tokens = tokens[:max_length]
             if len(tokens) < max_length:
@@ -238,9 +240,10 @@ class VQAFeatureDataset(Dataset):
 
     def tensorize(self):
         for entry in tqdm(self.entries, ncols=100, desc="tensorize"):
+            #print(entry['q_token'])
             question = torch.from_numpy(np.array(entry['q_token']))
             question_mask = torch.from_numpy(np.array(entry['q_token_mask']))
-
+            
             entry['q_token'] = question
             entry['q_token_mask']=question_mask
 
@@ -283,16 +286,16 @@ class VQAFeatureDataset(Dataset):
             type_mask=torch.tensor(self.type_mask[str(q_id)])
             notype_mask=torch.tensor(self.notype_mask[str(q_id)])
             if "bias" in entry:
-                return features, ques, target,entry["bias"],train_hint,type_mask,notype_mask,ques_mask
+                return features, ques, target, entry["bias"], train_hint, type_mask, notype_mask, ques_mask, q_id
 
             else:
                 return features, ques,target, 0,train_hint
         else:
-            test_hint=torch.tensor(self.test_hintsocre[str(q_id)])
+            test_hint = torch.tensor(self.test_hintsocre[str(q_id)])
             if "bias" in entry:
-                return features, ques, target, entry["bias"],q_id,test_hint
+                return features, ques, target, entry["bias"], q_id, test_hint
             else:
-                return features, ques, target, 0,q_id,test_hint
+                return features, ques, target, 0, q_id, test_hint
 
     def __len__(self):
         return len(self.entries)

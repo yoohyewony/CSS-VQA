@@ -6,7 +6,6 @@ from os.path import join
 
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
 import utils
 from torch.autograd import Variable
 import numpy as np
@@ -14,14 +13,17 @@ from tqdm import tqdm
 import random
 import copy
 
-import wandb
+
 
 def compute_score_with_logits(logits, labels):
+    #logits = torch.argmax(logits, 1)
+    #labels = torch.argmax(labels, 1)
+    #scores = (logits==labels)
     logits = torch.argmax(logits, 1)
     one_hots = torch.zeros(*labels.size()).cuda()
     one_hots.scatter_(1, logits.view(-1, 1), 1)
     scores = (one_hots * labels)
-    return scores.sum(1)
+    return scores
 
 def train(model, train_loader, eval_loader,args,qid2type):
     dataset=args.dataset
@@ -49,14 +51,14 @@ def train(model, train_loader, eval_loader,args,qid2type):
         keep_qtype=args.keep_qtype
         qvp=args.qvp
 
-    KLD = nn.KLDivLoss(reduction='none')
+
 
     for epoch in range(num_epochs):
         total_loss = 0
         train_score = 0
 
         t = time.time()
-        for i, (v, q, a, b, hintscore,type_mask,notype_mask,q_mask) in tqdm(enumerate(train_loader), ncols=100,
+        for i, (v, q, a, b, hintscore,type_mask,notype_mask,q_mask, qids) in tqdm(enumerate(train_loader), ncols=100,
                                                    desc="Epoch %d" % (epoch + 1), total=len(train_loader)):
 
             total_step += 1
@@ -73,32 +75,16 @@ def train(model, train_loader, eval_loader,args,qid2type):
             notype_mask=Variable(notype_mask).float().cuda()
             #########################################
 
-            target_kld = torch.ones(a.shape).cuda()/2274
-            #target_kld = torch.zeros(a.shape).cuda()
-            
             if mode=='updn':
-                pred, L,_ = model(v, q, a, b, None)
-                loss_KL = KLD(F.log_softmax(pred, dim=1), target_kld).sum(1)
-                #loss_KL = F.binary_cross_entropy_with_logits(pred, target_kld, reduction='none').sum()
-                if (L != L).any():
+                pred, loss,_ = model(v, q, a, b, None)
+                if (loss != loss).any():
                     raise ValueError("NaN loss")
-                
-                L_sorted, idx = torch.sort(L)
-                loss = L_sorted[416:].sum() #+ loss_KL
-                
-                for i in idx[416:]:
-                    loss += loss_KL[i]
-
-                #loss = L.sum() + loss_KL
-                
-                wandb.log({"Train loss " : loss.item()/96})
-                
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), 0.25)
                 optim.step()
                 optim.zero_grad()
 
-                total_loss += loss.item()
+                total_loss += loss.item() * q.size(0)
                 batch_score = compute_score_with_logits(pred, a.data).sum()
                 train_score += batch_score
 
@@ -376,8 +362,6 @@ def train(model, train_loader, eval_loader,args,qid2type):
 
         logger.write('epoch %d, time: %.2f' % (epoch, time.time() - t))
         logger.write('\ttrain_loss: %.2f, score: %.2f' % (total_loss, train_score))
-        wandb.log({"Train accuracy " : train_score,
-                  "Eval accuracy" : 100*eval_score})
 
         if run_eval:
             logger.write('\teval score: %.2f (%.2f)' % (100 * eval_score, 100 * bound))
@@ -404,7 +388,7 @@ def evaluate(model, dataloader, qid2type):
         q = Variable(q, requires_grad=False).cuda()
         pred, _,_ = model(v, q, None, None, None)
         #print(pred.shape)
-        batch_score = compute_score_with_logits(pred, a.cuda()).cpu().numpy()
+        batch_score = compute_score_with_logits(pred, a.cuda()).cpu().numpy().sum(1)
         score += batch_score.sum()
         upper_bound += (a.max(1)[0]).sum()
         qids = qids.detach().cpu().int().numpy()

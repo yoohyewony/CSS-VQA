@@ -216,7 +216,8 @@ def compute_target(answers_dset, ans2label, name, cache_root):
             'image_id': ans_entry['image_id'],
             'label_counts': label_counts,
             'labels': labels,
-            'scores': scores
+            'scores': scores,
+            #'question': ans_entry['question']      # changed
         })
 
     print(cache_root)

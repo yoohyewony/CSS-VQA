@@ -30,7 +30,7 @@ class BaseModel(nn.Module):
         # self.bias_scale = torch.nn.Parameter(torch.from_numpy(np.ones((1, ), dtype=np.float32)*1.2))
         self.bias_lin = torch.nn.Linear(1024, 1)
 
-    def forward(self, v, q, labels, bias,v_mask):
+    def forward(self, v, q, labels, bias, v_mask):
         """Forward
 
         v: [batch, num_objs, obj_dim]
@@ -58,8 +58,9 @@ class BaseModel(nn.Module):
         logits = self.classifier(joint_repr)
 
         if labels is not None:
-            #loss = self.debias_loss_fn(joint_repr, logits, bias, labels)
-            loss = F.binary_cross_entropy_with_logits(logits, labels, reduction='none').sum(1)
+            loss = self.debias_loss_fn(joint_repr, logits, bias, labels)
+            #loss = F.binary_cross_entropy_with_logits(logits, labels, reduction='none')#.sum(1)
+            #loss = None
         else:
             loss = None
 
@@ -78,7 +79,7 @@ def build_baseline0(dataset, num_hid):
 
 def build_baseline0_newatt(dataset, num_hid):
     w_emb = WordEmbedding(dataset.dictionary.ntoken, 300, 0.0)
-    q_emb = QuestionEmbedding(300, num_hid, 1, False, 0.0)
+    q_emb = QuestionEmbedding(300, num_hid, 1, False, 0.5)
     v_att = NewAttention(dataset.v_dim, q_emb.num_hid, num_hid)
     q_net = FCNet([q_emb.num_hid, num_hid])
     v_net = FCNet([dataset.v_dim, num_hid])

@@ -1,7 +1,6 @@
 import argparse
 import json
 import pickle
-#import cPickle as pickle
 from collections import defaultdict, Counter
 from os.path import dirname, join
 import os
@@ -16,17 +15,15 @@ import base_model
 from train import train
 import utils
 import click
-from vqa_debias_loss_functions import *
 
-import wandb
+from vqa_debias_loss_functions import *
 
 
 def parse_args():
     parser = argparse.ArgumentParser("Train the BottomUpTopDown model with a de-biasing method")
 
-    # MCL
-    parser.add_argument('--model_num', type = int, default=1, help='number of models (multiple choixe learning)')
-    
+    ## MCL
+    parser.add_argument('--model_num', default=1, help='number of models (multiple choixe learning)')
     # Arguments we added
     parser.add_argument(
         '--cache_features', default=True,
@@ -82,7 +79,7 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-def get_bias(train_dset, eval_dset):
+def get_bias(train_dset,eval_dset):
     # Compute the bias:
     # The bias here is just the expected score for each answer/question type
     answer_voc_size = train_dset.num_ans_candidates
@@ -129,7 +126,6 @@ def main():
         else:
             os._exit(1)
 
-    wandb.config.update(args)
 
 
     if dataset=='cpv1':
@@ -176,8 +172,6 @@ def main():
         qid2type=json.load(f)
     model=model.cuda()
     batch_size = args.batch_size
-    
-    wandb.watch(model)
 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -190,7 +184,6 @@ def main():
     train(model, train_loader, eval_loader, args,qid2type)
 
 if __name__ == '__main__':
-    wandb.init()
     main()
 
 

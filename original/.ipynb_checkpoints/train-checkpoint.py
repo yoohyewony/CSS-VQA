@@ -156,6 +156,8 @@ def train(model, train_loader, eval_loader,args,qid2type):
 
                 if (loss != loss).any():
                     raise ValueError("NaN loss")
+                loss = loss.sum()
+                print("v")
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), 0.25)
                 optim.step()
@@ -201,6 +203,7 @@ def train(model, train_loader, eval_loader,args,qid2type):
 
                 if (loss != loss).any():
                     raise ValueError("NaN loss")
+                loss = loss.sum()
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), 0.25)
                 optim.step()

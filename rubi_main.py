@@ -1,6 +1,6 @@
 import argparse
 import json
-import cPickle as pickle
+import pickle
 from collections import defaultdict, Counter
 from os.path import dirname, join
 import os

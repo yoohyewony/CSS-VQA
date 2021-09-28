@@ -53,7 +53,7 @@ def train(model, train_loader, eval_loader,args,qid2type):
         train_score = 0
 
         t = time.time()
-        for i, (v, q, a, b, hintscore,type_mask,notype_mask,q_mask) in tqdm(enumerate(train_loader), ncols=100,
+        for i, (v, q, a, b, hintscore, type_mask, notype_mask, q_mask, qids) in tqdm(enumerate(train_loader), ncols=100,
                                                    desc="Epoch %d" % (epoch + 1), total=len(train_loader)):
 
             total_step += 1

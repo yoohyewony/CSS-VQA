@@ -87,6 +87,12 @@ class BaseModel(nn.Module):
 
         if labels is not None:
             rubi_logits=logits*torch.sigmoid(q_pred)
+            '''
+            q_loss = F.binary_cross_entropy_with_logits(q_out, labels, reduction='none').sum(1)
+            q_sorted, idx =  torch.sort(q_loss)
+            k = 256
+            loss=F.binary_cross_entropy_with_logits(rubi_logits, labels) + q_sorted[512-k:].sum()
+            '''
             loss=F.binary_cross_entropy_with_logits(rubi_logits, labels)+F.binary_cross_entropy_with_logits(q_out, labels)
             loss *= labels.size(1)
 

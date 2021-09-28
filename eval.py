@@ -21,6 +21,11 @@ from vqa_debias_loss_functions import *
 from tqdm import tqdm
 from torch.autograd import Variable
 
+from sklearn.manifold import TSNE
+import numpy as np
+
+import wandb
+
 
 def parse_args():
     parser = argparse.ArgumentParser("Train the BottomUpTopDown model with a de-biasing method")
@@ -39,8 +44,8 @@ def parse_args():
         '-p', "--entropy_penalty", default=0.36, type=float,
         help="Entropy regularizer weight for the learned_mixin model")
     parser.add_argument(
-        '--debias', default="learned_mixin",
-        choices=["learned_mixin", "reweight", "bias_product", "none"],
+        '--debias', default="none",
+        choices=["learned_mixin", "reweight", "bias_product", "focal", "none"],
         help="Kind of ensemble loss to use")
     # Arguments from the original model, we leave this default, except we
     # set --epochs to 15 since the model maxes out its performance on VQA 2.0 well before then
@@ -73,28 +78,70 @@ def evaluate(model,dataloader,qid2type):
     # import pdb;pdb.set_trace()
 
 
-    for v, q, a, b,qids,hintscore in tqdm(dataloader, ncols=100, total=len(dataloader), desc="eval"):
+    for v, q, a, b, qids, hintscore in tqdm(dataloader, ncols=100, total=len(dataloader), desc="eval"):
         v = Variable(v, requires_grad=False).cuda()
         q = Variable(q, requires_grad=False).cuda()
-        pred, _ ,_= model(v, q, None, None,None)
-        batch_score= compute_score_with_logits(pred, a.cuda()).cpu().numpy()
+        pred, _ , q_emb= model(v, q, None, None,None)
+        batch_score = compute_score_with_logits(pred, a.cuda()).cpu().numpy()
+        #pred = F.softmax(pred, dim=1).detach()
+        
+        q_emb = q_emb.detach().cpu().numpy()
+        q_tsne = TSNE(n_components=2).fit_transform(q_emb)
+        #data = np.concatenate((q_emb, a.detach().cpu().numpy()), axis=1)
+        
+        #table = wandb.Table(data=q_tsne, columns = ["x", "y"])
+        #wandb.log({"scatter": wandb.plot.scatter(table, "x", "y", title="Question Embedding")})
+        
+        '''
+        v = pred.var(dim=1).cpu()
+        logit = torch.max(pred, 1)[0]
+        #print(logit, type(logit))
+        
+        data1 = []
+        data2 = []
+        for (i, y) in enumerate(logit):
+            if batch_score[i]:
+                data1.append([1, y, v[i]])
+            else:
+                data1.append([0, y, v[i]])
+        
+        #data = [[x, y] for (x, y) in zip(logit, v)]
+        table = wandb.Table(data=data1, columns = ["correct", "output", "variance"])
+        wandb.log({"scatter": wandb.plot.scatter(table, "output", "variance", title="Scatter plot")})
+        
+        #table = wandb.Table(data=data2, columns = ["output", "variance"])
+        #wandb.log({"scatter": wandb.plot.scatter(table, "output", "variance", title="Scatter plot")})
+        '''
+        
+        #print(batch_score)
         score += batch_score.sum()
         upper_bound += (a.max(1)[0]).sum()
         qids = qids.detach().cpu().int().numpy()
+        q_class = []
         for j in range(len(qids)):
-            qid=qids[j]
+            qid = qids[j]
             typ = qid2type[str(qid)]
             if typ == 'yes/no':
                 score_yesno += batch_score[j]
                 total_yesno += 1
+                q_class.append(0)
             elif typ == 'other':
                 score_other += batch_score[j]
                 total_other += 1
+                q_class.append(1)
             elif typ == 'number':
                 score_number += batch_score[j]
                 total_number += 1
+                q_class.append(2)
             else:
                 print('Hahahahahahahahahahaha')
+        q_class = np.array(q_class)
+        q_class = np.expand_dims(q_class, axis=1)
+        data = np.concatenate((q_tsne, q_class), axis=1)
+        
+        table = wandb.Table(data=data, columns = ["x", "y", "answer"])
+        wandb.log({"scatter": wandb.plot.scatter(table, "x", "y", title="Question Embedding")})
+        
     score = score / len(dataloader.dataset)
     upper_bound = upper_bound / len(dataloader.dataset)
     score_yesno /= total_yesno
@@ -117,9 +164,18 @@ def evaluate_ai(model,dataloader,qid2type,label2ans):
     for v, q, a, b, qids, hintscore in tqdm(dataloader, ncols=100, total=len(dataloader), desc="eval"):
         v = Variable(v, requires_grad=False).cuda().float().requires_grad_()
         q = Variable(q, requires_grad=False).cuda()
-        a=a.cuda()
+        a = a.cuda()
         hintscore=hintscore.cuda().float()
-        pred, _, _ = model(v, q, None, None, None)
+        pred, _, w_emb = model(v, q, None, None, None)
+        '''
+        v = pred.var(dim=1)
+        logit = torch.max(pred, 1)
+        
+        data = [[x, y] for (x, y) in zip(logit, v)]
+        table = wandb.Table(data=data, columns = ["output", "variance"])
+        wandb.log({"scatter": wandb.plot.scatter(table, "output", "variance")})
+        '''
+        
         vqa_grad = torch.autograd.grad((pred * (a > 0).float()).sum(), v, create_graph=True)[0]  # [b , 36, 2048]
 
         vqa_grad_cam=vqa_grad.sum(2)
@@ -162,6 +218,7 @@ def main():
     args = parse_args()
     dataset = args.dataset
 
+    wandb.config.update(args)
 
     with open('util/qid2type_%s.json'%args.dataset,'r') as f:
         qid2type=json.load(f)
@@ -187,6 +244,8 @@ def main():
         model.debias_loss_fn = ReweightByInvBias()
     elif args.debias == "learned_mixin":
         model.debias_loss_fn = LearnedMixin(args.entropy_penalty)
+    elif args.debias=='focal':
+        model.debias_loss_fn = Focal()
     else:
         raise RuntimeError(args.mode)
 
@@ -197,6 +256,8 @@ def main():
 
     model = model.cuda()
     batch_size = args.batch_size
+    
+    wandb.watch(model)
 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -212,4 +273,5 @@ def main():
     evaluate(model,eval_loader,qid2type)
 
 if __name__ == '__main__':
+    wandb.init()
     main()
